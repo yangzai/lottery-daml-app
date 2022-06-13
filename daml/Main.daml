@@ -1,0 +1,130 @@
+module Main where
+
+import DA.Date qualified as D
+import DA.Time qualified as TM
+import DA.Set qualified as S
+import DA.Map qualified as M
+import Lottery qualified as L
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Numeric (mul)
+
+
+main: Script ()
+main = do
+    public <- allocateParty "public"
+    org <- allocateParty "org"
+    alice <- allocateParty "alice"
+
+    now <- getTime
+    let today = D.toDateUTC now
+    let drawDate = D.addDays today 10
+    let odds: Decimal = 10.0
+
+    book <- submit public $
+        createCmd $ L.Book public $ M.fromList
+            [ (alice, 100.0)
+            , (org, 1_000_000.0)
+            ]
+    draw <- submit org $
+        createCmd $ L.Draw with
+            organiser = org, drawDate, mResult = None
+                , odds, participants = [alice], bookkeeper = public
+    
+    -- should fail with invalid lottery numbers
+    submitMustFail alice $
+        createCmd $ L.Numbers alice $ S.fromList [1,2,3] -- too few
+    submitMustFail alice $
+        createCmd $ L.Numbers alice $ S.fromList [1..8] -- too many
+    submitMustFail alice $
+        createCmd $ L.Numbers alice $ S.fromList [50, 1..6] -- out of range
+
+    (nums, nums') <- submit alice $ liftA2 (,)
+        (createCmd $ L.Numbers alice $ S.fromList [1..7])
+        (createCmd $ L.Numbers alice $ S.fromList [8..14])
+    
+    -- should fail with insufficient funds
+    submitMustFail alice $
+        exerciseCmd draw L.MakeBet with
+            buyer = alice, bet = 101.0, nsCid = nums
+
+    submit alice $ sequence
+        [ exerciseCmd draw L.MakeBet with
+            buyer = alice, bet = 2.0, nsCid = nums
+        , exerciseCmd draw L.MakeBet with
+            buyer = alice, bet = 4.0, nsCid = nums'
+        , exerciseCmd draw L.MakeBet with
+            buyer = alice, bet = 6.0, nsCid = nums
+        ]
+
+    Some (tix, _) <- queryContractKey @L.Ticket alice (alice, org, drawDate)
+
+    -- alice and org should not be able to archive the tickets by themselves
+    submitMustFail alice $
+        archiveCmd tix
+    submitMustFail org $
+        archiveCmd tix
+
+    -- they should be able to archive it together but this will void a winning ticket for redemption
+    -- submitMulti [alice, org] [] $
+    --     archiveCmd tix
+
+    -- org should not be able to  archive the numbers
+    submitMustFail org $
+        archiveCmd nums
+    
+    -- alice should be able to archive their numbers but this will also void a winning ticket
+    -- submit alice $
+    --     archiveCmd nums
+
+    -- should fail if attempt to redeem before result release
+    submitMustFail alice $
+        exerciseCmd draw $ L.Redeem alice
+    
+    -- should fail if attempt to release result before draw date
+    submitMustFail org $
+        exerciseCmd draw $ L.ReleaseResult $ S.fromList [1..7]
+    
+    -- pass time beyond draw date
+    passTime $ TM.days 10
+
+    draw <- submit org $
+        exerciseCmd draw $ L.ReleaseResult $ S.fromList [1..7]
+    
+    -- should fail if attempt to reset result
+    submitMustFail org $
+        exerciseCmd draw $ L.ReleaseResult $ S.fromList [8..14]
+    
+    submit alice $
+        exerciseCmd draw $ L.Redeem alice
+    
+    -- should fail if attempt to redeem ticket again
+    submitMustFail alice $
+        exerciseCmd draw $ L.Redeem alice
+
+    -- should fail if attempt to bet on a draw that has already ended
+    submitMustFail alice $
+        exerciseCmd draw $ L.MakeBet alice 8.0 nums
+        
+    let betAmt = 2.0 + 4.0 + 6.0
+        winAmt = ((2.0: Numeric 2) + 6.0) `mul` odds
+
+    Some (book, _) <- queryContractKey @L.Book public public
+
+    aliceBal <- submit alice $
+        exerciseCmd book $ L.GetBalance alice
+    
+    orgBal <- submit org $
+        exerciseCmd book $ L.GetBalance org
+    
+    -- final balances should tally
+    aliceBal === 100.0 - betAmt + winAmt
+    orgBal === 1_000_000.0 + betAmt - winAmt
+
+    numsVisibleByOrg <- query @L.Numbers org
+
+    -- lottery numbers should not be visible by org
+    -- i.e. org has to commit to the release of the result
+    -- before knowing if a ticket has won on redemption
+    numsVisibleByOrg === mempty

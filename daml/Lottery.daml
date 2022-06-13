@@ -1,0 +1,135 @@
+module Lottery
+    ( module Lottery
+    ) where
+
+import DA.Date qualified as D
+import DA.Map qualified as M
+
+import DA.Set (Set)
+import DA.Map (Map)
+import DA.Action (when)
+import DA.Foldable (Foldable, and, all, length)
+import DA.Functor (void)
+import DA.Optional (fromOptional, isNone)
+import DA.Numeric (mul)
+import Prelude hiding (and, all, length)
+
+
+is7NumbersBetween1And49: Foldable f => f Int -> Bool
+is7NumbersBetween1And49 = and . ap [(== 7) . length, all (> 0), all (<= 49)] . pure
+
+template Book with
+    bookkeeper: Party
+    book: Map Party (Numeric 2)
+  where
+    signatory bookkeeper
+    observer M.keys book
+    key bookkeeper: Party
+    maintainer key
+    nonconsuming choice GetBalance: Numeric 2 with
+        party: Party
+      controller party
+      do
+        return $ fromOptional 0.0 $ M.lookup party book
+    choice Transfer: ContractId Book with
+        from: Party
+        to: Party
+        amt: Numeric 2
+      controller from
+      do
+        let amt' = fromOptional 0.0
+                . M.lookup from
+                $ book
+        assertMsg "Insufficient funds." $ amt' >= amt
+        create this with
+            book =
+                M.alter (Some . optional amt (+ amt)) to
+                . M.alter (fmap $ subtract amt) from
+                $ book
+
+template Draw with
+    organiser: Party
+    drawDate: Date
+    mResult: Optional (Set Int)
+    odds: Decimal
+    participants: [Party]
+    bookkeeper: Party
+  where
+    key (organiser, drawDate): (Party, Date)
+    maintainer key._1
+    signatory organiser
+    observer participants
+    ensure optional True is7NumbersBetween1And49 mResult
+        && odds > 1.0
+    choice ReleaseResult: ContractId Draw with
+        result: Set Int
+      controller organiser
+      do
+        assertMsg "You cannot reset the result." $ isNone mResult
+        now <- getTime
+        assertMsg "Too early for result release." $ D.toDateUTC now >= drawDate
+        create this with mResult = Some result
+    nonconsuming choice MakeBet: ContractId Ticket with
+        buyer: Party
+        bet: Numeric 2
+        nsCid: ContractId Numbers
+      controller buyer
+      do
+        assertMsg "You cannot make bets after the result is out." $ isNone mResult
+        assertMsg "Bet needs to be > 0." $ bet > 0.0
+
+        exerciseByKey @Book bookkeeper Transfer with
+            from = buyer, to = organiser, amt = bet
+
+        lookupByKey @Ticket (buyer, organiser, drawDate) >>= \case
+            Some cid -> do
+                tix <- fetch cid
+                archive cid
+                create tix with
+                    bets = M.alter (Some . optional bet (+ bet)) nsCid tix.bets
+            None ->
+                create Ticket with
+                    owner = buyer, drawKey = (organiser, drawDate), bets = M.fromList [(nsCid, bet)] 
+    nonconsuming choice Redeem: () with
+        buyer: Party
+      controller buyer
+      do
+        (tixCid, tix) <- fetchByKey @Ticket (buyer, organiser, drawDate)
+        bet <- exercise tixCid CheckWinningBet
+        when (bet > 0.0) . void $
+            exerciseByKey @Book bookkeeper Transfer with
+                from = organiser, to = buyer, amt = bet `mul` odds
+        archive tixCid
+
+template Numbers with
+    owner: Party
+    numbers: Set Int
+  where
+    signatory owner
+    ensure is7NumbersBetween1And49 numbers
+
+template Ticket with
+    owner: Party
+    drawKey: (Party, Date) -- (organiser, drawDate)
+    bets: Map (ContractId Numbers) (Numeric 2)
+  where
+    signatory owner, drawKey._1
+    key (owner, drawKey._1, drawKey._2): (Party, Party, Date)
+    maintainer key._1
+
+    nonconsuming choice CheckWinningBet: Numeric 2
+      controller drawKey._1
+      do
+        (_, draw) <- fetchByKey @Draw drawKey
+        result <- optional
+            (abort "You cannot check winnings before result release.") pure
+            draw.mResult
+        winBets <- mapA (\(cid, b) -> do
+            num <- fetch @Numbers cid
+            return $
+                if num.numbers == result then
+                    b
+                else 0.0
+            ) $ M.toList bets
+
+        return $ sum winBets

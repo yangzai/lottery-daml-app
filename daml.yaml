@@ -1,0 +1,10 @@
+sdk-version: 2.2.0
+name: lottery-daml-app
+version: 0.1.0
+source: daml
+dependencies:
+- daml-prim
+- daml-stdlib
+- daml-script
+start-navigator: false
+init-script: Main:main
