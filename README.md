@@ -8,6 +8,6 @@ A lottery model that attempts to keep the organiser of a draw from knowing about
     * A lottery draw.
 - Ticket
     * Ticket for a draw.
-    * Contains refence to set of `Numbers` and their matching bets.
+    * Contains reference to set of `Numbers` and their matching bets.
 - Numbers
-    * Encapuslation for a set of 7 numbers rannging from 1 to 49.
+    * Encapsulation for a set of 7 numbers ranging from 1 to 49.

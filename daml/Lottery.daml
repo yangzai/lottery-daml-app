@@ -7,7 +7,7 @@ import DA.Map qualified as M
 
 import DA.Set (Set)
 import DA.Map (Map)
-import DA.Action (when)
+import DA.Action (foldlA, when)
 import DA.Foldable (Foldable, and, all, length)
 import DA.Functor (void)
 import DA.Optional (fromOptional, isNone)
@@ -124,12 +124,12 @@ template Ticket with
         result <- optional
             (abort "You cannot check winnings before result release.") pure
             draw.mResult
-        winBets <- mapA (\(cid, b) -> do
+        foldlA (\acc (cid, b) -> do
+            -- Fetch will fail if numbers have been archived which is desirable as this indicates forgey.
+            -- Currently we a being strict and fail even if the archival
+            -- was not on the winning sets of numbers, but this behaviour could be changed.
             num <- fetch @Numbers cid
-            return $
-                if num.numbers == result then
-                    b
-                else 0.0
-            ) $ M.toList bets
-
-        return $ sum winBets
+            if num.numbers == result
+                then return $ acc + b
+                else return acc
+            ) aunit $ M.toList bets

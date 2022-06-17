@@ -34,7 +34,7 @@ main = do
     
     -- should fail with invalid lottery numbers
     submitMustFail alice $
-        createCmd $ L.Numbers alice $ S.fromList [1,2,3] -- too few
+        createCmd $ L.Numbers alice $ S.fromList [1, 2, 3] -- too few
     submitMustFail alice $
         createCmd $ L.Numbers alice $ S.fromList [1..8] -- too many
     submitMustFail alice $
@@ -49,13 +49,10 @@ main = do
         exerciseCmd draw L.MakeBet with
             buyer = alice, bet = 101.0, nsCid = nums
 
-    submit alice $ sequence
-        [ exerciseCmd draw L.MakeBet with
-            buyer = alice, bet = 2.0, nsCid = nums
-        , exerciseCmd draw L.MakeBet with
-            buyer = alice, bet = 4.0, nsCid = nums'
-        , exerciseCmd draw L.MakeBet with
-            buyer = alice, bet = 6.0, nsCid = nums
+    submit alice $ mapA (exerciseCmd draw)
+        [ L.MakeBet with buyer = alice, bet = 2.0, nsCid = nums
+        , L.MakeBet with buyer = alice, bet = 4.0, nsCid = nums'
+        , L.MakeBet with buyer = alice, bet = 6.0, nsCid = nums
         ]
 
     Some (tix, _) <- queryContractKey @L.Ticket alice (alice, org, drawDate)
